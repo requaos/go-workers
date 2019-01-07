@@ -29,6 +29,9 @@ func Stats(w http.ResponseWriter, req *http.Request) {
 		jobs[queue] = make([]*map[string]interface{}, 0)
 		enqueued[queue] = ""
 		for _, worker := range m.workers {
+			if worker == nil {
+				continue
+			}
 			if worker.currentMsg != nil && worker.startedAt > 0 {
 				message := worker.currentMsg
 				startedAt := worker.startedAt
