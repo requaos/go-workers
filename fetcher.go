@@ -109,7 +109,7 @@ func (f *fetch) sendMessage(message string) {
 func (f *fetch) Acknowledge(message *Msg) {
 	rc := Config.Client
 
-	rc.LRem(f.inprogressQueue(), -1, message.OriginalJson()).Result()
+	rc.LRem(f.inprogressQueue(), 0, message.OriginalJson()).Result()
 }
 
 func (f *fetch) Messages() chan *Msg {
