@@ -2,6 +2,8 @@ package workers
 
 import (
 	"crypto/rand"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -27,6 +29,7 @@ type EnqueueOptions struct {
 	RetryCount int     `json:"retry_count,omitempty"`
 	Retry      bool    `json:"retry,omitempty"`
 	At         float64 `json:"at,omitempty"`
+	Unique     bool    `json:"unique,omitempty"`
 }
 
 func generateJid() string {
@@ -51,7 +54,24 @@ func EnqueueAt(queue, class string, at time.Time, args interface{}) (string, err
 	return EnqueueWithOptions(queue, class, args, EnqueueOptions{At: timeToSecondsWithNanoPrecision(at)})
 }
 
+func EnqueueUnique(queue, class string, at time.Time, args interface{}) (string, error) {
+	return EnqueueWithOptions(queue, class, args, EnqueueOptions{At: nowToSecondsWithNanoPrecision(), Unique: true})
+}
+
 func EnqueueWithOptions(queue, class string, args interface{}, opts EnqueueOptions) (string, error) {
+	if opts.Unique {
+		rc := Config.Client
+		bytes, err := json.Marshal(args)
+		if err != nil {
+			return "", err
+		}
+		sum := sha1.Sum(bytes)
+		if !rc.SetNX(hex.EncodeToString(sum[:]), "unique", 0).Val() {
+			// already in the list
+			return "", nil
+		}
+	}
+
 	now := nowToSecondsWithNanoPrecision()
 	data := EnqueueData{
 		Queue:          queue,

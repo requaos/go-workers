@@ -1,6 +1,8 @@
 package workers
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -67,6 +69,13 @@ func (r *MiddlewareRetry) Call(queue string, message *Msg, next func() error) (e
 	err = next()
 	if err != nil {
 		err = r.processError(queue, message, err)
+	} else {
+		val, err := message.Get("unique").Bool()
+		if err != nil && val {
+			rc := Config.Client
+			sum := sha1.Sum([]byte(message.Args().ToJson()))
+			rc.Del(hex.EncodeToString(sum[:])).Result()
+		}
 	}
 
 	return
