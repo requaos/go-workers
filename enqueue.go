@@ -2,10 +2,14 @@ package workers
 
 import (
 	"crypto/rand"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"time"
+
+	"github.com/go-redis/redis"
 )
 
 const (
@@ -25,6 +29,7 @@ type EnqueueOptions struct {
 	RetryCount int     `json:"retry_count,omitempty"`
 	Retry      bool    `json:"retry,omitempty"`
 	At         float64 `json:"at,omitempty"`
+	Unique     bool    `json:"unique,omitempty"`
 }
 
 func generateJid() string {
@@ -49,7 +54,24 @@ func EnqueueAt(queue, class string, at time.Time, args interface{}) (string, err
 	return EnqueueWithOptions(queue, class, args, EnqueueOptions{At: timeToSecondsWithNanoPrecision(at)})
 }
 
+func EnqueueUnique(queue, class string, at time.Time, args interface{}) (string, error) {
+	return EnqueueWithOptions(queue, class, args, EnqueueOptions{At: nowToSecondsWithNanoPrecision(), Unique: true})
+}
+
 func EnqueueWithOptions(queue, class string, args interface{}, opts EnqueueOptions) (string, error) {
+	if opts.Unique {
+		rc := Config.Client
+		bytes, err := json.Marshal(args)
+		if err != nil {
+			return "", err
+		}
+		sum := sha1.Sum(bytes)
+		if !rc.SetNX(hex.EncodeToString(sum[:]), "unique", 0).Val() {
+			// already in the list
+			return "", nil
+		}
+	}
+
 	now := nowToSecondsWithNanoPrecision()
 	data := EnqueueData{
 		Queue:          queue,
@@ -70,15 +92,14 @@ func EnqueueWithOptions(queue, class string, args interface{}, opts EnqueueOptio
 		return data.Jid, err
 	}
 
-	conn := Config.Pool.Get()
-	defer conn.Close()
+	rc := Config.Client
 
-	_, err = conn.Do("sadd", Config.Namespace+"queues", queue)
+	_, err = rc.SAdd(Config.Namespace+"queues", queue).Result()
 	if err != nil {
 		return "", err
 	}
 	queue = Config.Namespace + "queue:" + queue
-	_, err = conn.Do("rpush", queue, bytes)
+	_, err = rc.LPush(queue, bytes).Result()
 	if err != nil {
 		return "", err
 	}
@@ -87,13 +108,9 @@ func EnqueueWithOptions(queue, class string, args interface{}, opts EnqueueOptio
 }
 
 func enqueueAt(at float64, bytes []byte) error {
-	conn := Config.Pool.Get()
-	defer conn.Close()
+	rc := Config.Client
 
-	_, err := conn.Do(
-		"zadd",
-		Config.Namespace+SCHEDULED_JOBS_KEY, at, bytes,
-	)
+	_, err := rc.ZAdd(Config.Namespace+SCHEDULED_JOBS_KEY, redis.Z{Score: at, Member: bytes}).Result()
 	if err != nil {
 		return err
 	}

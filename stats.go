@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+
+	"github.com/go-redis/redis"
 )
 
 type stats struct {
@@ -27,10 +29,12 @@ func Stats(w http.ResponseWriter, req *http.Request) {
 		jobs[queue] = make([]*map[string]interface{}, 0)
 		enqueued[queue] = ""
 		for _, worker := range m.workers {
-			message := worker.currentMsg
-			startedAt := worker.startedAt
-
-			if message != nil && startedAt > 0 {
+			if worker == nil {
+				continue
+			}
+			if worker.currentMsg != nil && worker.startedAt > 0 {
+				message := worker.currentMsg
+				startedAt := worker.startedAt
 				jobs[queue] = append(jobs[queue], &map[string]interface{}{
 					"message":    message,
 					"started_at": startedAt,
@@ -47,48 +51,31 @@ func Stats(w http.ResponseWriter, req *http.Request) {
 		0,
 	}
 
-	conn := Config.Pool.Get()
-	defer conn.Close()
+	rc := Config.Client
 
-	conn.Send("multi")
-	conn.Send("get", Config.Namespace+"stat:processed")
-	conn.Send("get", Config.Namespace+"stat:failed")
-	conn.Send("zcard", Config.Namespace+RETRY_KEY)
+	pipe := rc.Pipeline()
+	pGet := pipe.Get(Config.Namespace + "stat:processed")
+	fGet := pipe.Get(Config.Namespace + "stat:failed")
+	rGet := pipe.ZCard(Config.Namespace + RETRY_KEY)
 
+	var qLen []*redis.IntCmd
 	for key, _ := range enqueued {
-		conn.Send("llen", fmt.Sprintf("%squeue:%s", Config.Namespace, key))
+		qLen = append(qLen, pipe.LLen(fmt.Sprintf("%squeue:%s", Config.Namespace, key)))
 	}
 
-	r, err := conn.Do("exec")
+	_, err := pipe.Exec()
 
 	if err != nil {
 		Logger.Println("couldn't retrieve stats:", err)
-	}
+	} else {
+		stats.Processed, _ = strconv.Atoi(pGet.Val())
+		stats.Failed, _ = strconv.Atoi(fGet.Val())
+		stats.Retries = rGet.Val()
 
-	results := r.([]interface{})
-	if len(results) == (3 + len(enqueued)) {
-		for index, result := range results {
-			if index == 0 && result != nil {
-				stats.Processed, _ = strconv.Atoi(string(result.([]byte)))
-				continue
-			}
-			if index == 1 && result != nil {
-				stats.Failed, _ = strconv.Atoi(string(result.([]byte)))
-				continue
-			}
-
-			if index == 2 && result != nil {
-				stats.Retries = result.(int64)
-				continue
-			}
-
-			queueIndex := 0
-			for key, _ := range enqueued {
-				if queueIndex == (index - 3) {
-					enqueued[key] = fmt.Sprintf("%d", result.(int64))
-				}
-				queueIndex++
-			}
+		queueIndex := 0
+		for key, _ := range enqueued {
+			enqueued[key] = fmt.Sprintf("%d", qLen[queueIndex].Val())
+			queueIndex++
 		}
 	}
 
